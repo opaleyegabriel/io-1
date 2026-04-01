@@ -821,6 +821,7 @@ const LoginScreen = () => {
           // Store data and redirect
           await AsyncStorage.setItem("AccessToken", checkData.token || "google-auth-token");
           await AsyncStorage.setItem("email", user.email);
+          await AsyncStorage.setItem("mobile", checkData.mobile);
           await AsyncStorage.setItem("name", user.name || "");
           await AsyncStorage.setItem("user_type", checkData.user_type || "customer");
           await AsyncStorage.setItem("google_linked", "true");
