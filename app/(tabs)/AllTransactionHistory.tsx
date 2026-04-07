@@ -488,6 +488,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 
 // THE REPLACEMENT: No more Reanimated or Moti crashes
 import * as Animatable from 'react-native-animatable';
+import { useEffect, useMemo, useState } from 'react';
 
 const API_URL = 'https://hoog.ng/infiniteorder/api/Customers/readCustomerTransactions.php';
 

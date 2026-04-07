@@ -10,7 +10,11 @@ import {
   FlatList, 
   Alert, 
   ActivityIndicator, 
-  RefreshControl 
+  RefreshControl,
+  Dimensions,
+  Platform,
+  SafeAreaView,
+  StatusBar
 } from 'react-native';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import Container from '@/components/container';
@@ -28,6 +32,9 @@ import TopBar from '@/components/TopBar';
 import OrderSummary from '@/components/OrderSummary';
 import OrderTracking from '@/components/OrderTrackinga';
 import OrderHistory from '@/components/OrderHistory';
+
+const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
+const isTablet = SCREEN_WIDTH >= 768;
 
 const COLORS = {
   gold: '#b7790f',
@@ -48,15 +55,15 @@ const COLORS = {
 
 // Company office location (simulated for now)
 const COMPANY_OFFICE = {
-  lat: 8.4815407000, // Lagos coordinates
+  lat: 8.4815407000,
   lng: 4.5621774000,
   address: "1, Opp Railway Line, Unity Road, Ilorin, Kwara State.",
   name: "Ilorin Main Office"
 };
 
 // Base delivery fee for pickup and delivery combined
-const BASE_DELIVERY_FEE = 300; // ₦500 static fee
-const RATE_PER_KM = 100; // ₦100 per 2km (so ₦50 per km)
+const BASE_DELIVERY_FEE = 300;
+const RATE_PER_KM = 100;
 
 // Common laundry instructions
 const COMMON_INSTRUCTIONS = [
@@ -92,7 +99,7 @@ interface CartItem {
   price: number;
   quantity: number;
   category?: string;
-  instructions?: string; // Special instructions for this item
+  instructions?: string;
 }
 
 interface LocationSuggestion {
@@ -116,8 +123,8 @@ interface CustomerLocation {
     lat: number;
     lng: number;
   };
-  distanceFromOffice: number; // in km
-  deliveryFee: number; // calculated fee for this location
+  distanceFromOffice: number;
+  deliveryFee: number;
   fullDescription: string;
 }
 
@@ -135,27 +142,24 @@ interface OrderData {
   total: number;
   pickupLocation: CustomerLocation;
   deliveryLocation: CustomerLocation;
-  orderInstructions?: string; // Overall order instructions
+  orderInstructions?: string;
 }
 
-// Delivery/Pickup option type
 type ServiceOption = 'delivery' | 'self-pickup' | 'self-delivery' | 'full-self';
 
 const AlsScreen = () => {
   const [activeScreen, setActiveScreen] = useState('comboBox');
   const [balance, setBalance] = useState(0);
   const [mobile, setMobile] = useState('');
-
   const [email, setEmail] = useState('');
   const [customerName, setCustomerName] = useState('');
-  
   const [alsUsableAmt, setAlsUsableAmt] = useState(0);
   const [profileImage, setProfileImage] = useState('');
   const [orderData, setOrderData] = useState<OrderData | null>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [trackingOrderId, setTrackingOrderId] = useState<string | null>(null);
   
-  // States from ComboBoxWithTable
+  // Cart States
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedItems, setSelectedItems] = useState<CartItem[]>([]);
   const [grandTotal, setGrandTotal] = useState(0);
@@ -169,31 +173,32 @@ const AlsScreen = () => {
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [showCart, setShowCart] = useState(false);
   
-  // New state for service options
+  // Service options
   const [serviceOption, setServiceOption] = useState<ServiceOption>('delivery');
   const [bypassMinOrder, setBypassMinOrder] = useState(false);
   
   // Location search states
-  const [locationSearchModal, setLocationSearchModal] = useState(false);
+  const [showLocationModal, setShowLocationModal] = useState(false);
   const [locationSearchType, setLocationSearchType] = useState<'pickup' | 'delivery'>('pickup');
   const [locationSearchQuery, setLocationSearchQuery] = useState('');
   const [locationSuggestions, setLocationSuggestions] = useState<LocationSuggestion[]>([]);
   const [searchingLocation, setSearchingLocation] = useState(false);
   const [pickupLocation, setPickupLocation] = useState<CustomerLocation | null>(null);
   const [deliveryLocation, setDeliveryLocation] = useState<CustomerLocation | null>(null);
-  const [useSameLocation, setUseSameLocation] = useState(true); // Default to same location for both
+  const [useSameLocation, setUseSameLocation] = useState(true);
   
   // Special instructions states
-  const [instructionsModal, setInstructionsModal] = useState(false);
+  const [showInstructionsModal, setShowInstructionsModal] = useState(false);
   const [selectedItemForInstructions, setSelectedItemForInstructions] = useState<CartItem | null>(null);
   const [itemInstructions, setItemInstructions] = useState('');
   const [orderInstructions, setOrderInstructions] = useState('');
-  const [orderInstructionsModal, setOrderInstructionsModal] = useState(false);
+  const [showOrderInstructionsModal, setShowOrderInstructionsModal] = useState(false);
   const [showCommonInstructions, setShowCommonInstructions] = useState(false);
   
   const [step, setStep] = useState(1);
   const debounceRef = useRef<NodeJS.Timeout>();
 
+  // ==================== INITIALIZATION ====================
   useEffect(() => {
     initializeApp();
   }, []);
@@ -215,6 +220,10 @@ const AlsScreen = () => {
       setProfileImage(profileimage || '');
       setCustomerName(name || 'User');
       setEmail(mail || '');
+      
+      if (MyMobile) {
+        await getBalanceAls(MyMobile);
+      }
     } catch (error) {
       console.error('Error getting token:', error);
     }
@@ -245,7 +254,6 @@ const AlsScreen = () => {
     }
   }, []);
 
-  // Refresh balance function
   const refreshBalance = useCallback(async () => {
     if (mobile) {
       await getBalanceAls(mobile);
@@ -269,8 +277,6 @@ const AlsScreen = () => {
       const data = await response.json();
       if (data && Array.isArray(data)) {
         setItems(data);
-        
-        // Extract unique categories
         const uniqueCategories = ['All', ...new Set(data.map(item => item.category || 'General').filter(Boolean))];
         setCategories(uniqueCategories);
         setSelectedCategory('All');
@@ -289,36 +295,75 @@ const AlsScreen = () => {
     fetchItems();
   }, []);
 
-  // Calculate distance between two coordinates using Haversine formula
+  // ==================== LOCATION & DELIVERY CALCULATIONS ====================
   const calculateDistance = (lat1: number, lon1: number, lat2: number, lon2: number) => {
-    const R = 6371; // Earth's radius in km
+    const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLon = (lon2 - lon1) * Math.PI / 180;
-    const a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
-      Math.sin(dLon/2) * Math.sin(dLon/2);
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-    const distance = R * c;
-    return distance;
+    return R * c;
   };
 
-  // Calculate delivery fee based on distance from office
   const calculateDeliveryFeeFromOffice = (lat: number, lng: number) => {
     const distance = calculateDistance(COMPANY_OFFICE.lat, COMPANY_OFFICE.lng, lat, lng);
-    
-    // Fee calculation: ₦100 per 2km + ₦500 base fee for pickup and delivery combined
-    // Since it's round trip (pickup and delivery), we calculate for one way and multiply by 2
-    const oneWayFee = (distance / 2) * RATE_PER_KM; // ₦100 per 2km = ₦50 per km
-    const totalFee = (oneWayFee * 2) + BASE_DELIVERY_FEE; // Round trip + base fee
-    
+    const oneWayFee = (distance / 2) * RATE_PER_KM;
+    const totalFee = (oneWayFee * 2) + BASE_DELIVERY_FEE;
     return {
       distance: parseFloat(distance.toFixed(2)),
       fee: Math.round(totalFee)
     };
   };
 
-  // Search locations using OpenStreetMap Nominatim
+  const calculateTotalDeliveryFee = useCallback(() => {
+    if (serviceOption === 'full-self') {
+      return 0;
+    } else if (serviceOption === 'self-pickup') {
+      return deliveryLocation?.deliveryFee || 0;
+    } else if (serviceOption === 'self-delivery') {
+      return pickupLocation?.deliveryFee || 0;
+    } else {
+      let total = 0;
+      if (pickupLocation) total += pickupLocation.deliveryFee;
+      if (deliveryLocation) total += deliveryLocation.deliveryFee;
+      return total;
+    }
+  }, [serviceOption, pickupLocation, deliveryLocation]);
+
+  const calculateTotalWithDelivery = useCallback(() => {
+    return grandTotal + calculateTotalDeliveryFee();
+  }, [grandTotal, calculateTotalDeliveryFee]);
+
+  const isBalanceSufficient = useCallback(() => {
+    const totalWithDelivery = calculateTotalWithDelivery();
+    return totalWithDelivery <= alsUsableAmt;
+  }, [calculateTotalWithDelivery, alsUsableAmt]);
+
+  const getBalanceDeficit = useCallback(() => {
+    const totalWithDelivery = calculateTotalWithDelivery();
+    return Math.max(0, totalWithDelivery - alsUsableAmt);
+  }, [calculateTotalWithDelivery, alsUsableAmt]);
+
+  useEffect(() => {
+    const total = selectedItems.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+    setGrandTotal(total);
+  }, [selectedItems]);
+
+  useEffect(() => {
+    if (selectedItems.length > 0) {
+      const totalWithDelivery = calculateTotalWithDelivery();
+      if (totalWithDelivery > alsUsableAmt) {
+        Alert.alert(
+          'Insufficient Balance', 
+          `Total order cost (including delivery) is ₦${totalWithDelivery.toLocaleString()}. Your usable balance is ₦${alsUsableAmt.toLocaleString()}. Kindly load money to make this order.`
+        );
+      }
+    }
+  }, [grandTotal, alsUsableAmt, selectedItems.length, calculateTotalWithDelivery]);
+
+  // ==================== LOCATION SEARCH ====================
   const searchLocations = async (query: string) => {
     if (query.length < 3) {
       setLocationSuggestions([]);
@@ -337,11 +382,7 @@ const AlsScreen = () => {
         description: item.display_name,
         structured_formatting: {
           main_text: item.address?.road || item.name || item.display_name.split(',')[0],
-          secondary_text: [
-            item.address?.suburb,
-            item.address?.city,
-            item.address?.state
-          ].filter(Boolean).join(', '),
+          secondary_text: [item.address?.suburb, item.address?.city, item.address?.state].filter(Boolean).join(', '),
         },
         coordinates: {
           lat: parseFloat(item.lat),
@@ -359,12 +400,13 @@ const AlsScreen = () => {
 
   const handleLocationSearchChange = (text: string) => {
     setLocationSearchQuery(text);
-    clearTimeout(debounceRef.current);
+    if (debounceRef.current) {
+      clearTimeout(debounceRef.current);
+    }
     debounceRef.current = setTimeout(() => searchLocations(text), 500);
   };
 
   const handleSelectLocation = (suggestion: LocationSuggestion) => {
-    // Calculate distance and fee from office
     const { distance, fee } = calculateDeliveryFeeFromOffice(
       suggestion.coordinates.lat,
       suggestion.coordinates.lng
@@ -382,7 +424,6 @@ const AlsScreen = () => {
 
     if (locationSearchType === 'pickup') {
       setPickupLocation(locationData);
-      // If "use same location" is enabled, also set delivery to same location
       if (useSameLocation) {
         setDeliveryLocation(locationData);
       }
@@ -390,8 +431,7 @@ const AlsScreen = () => {
       setDeliveryLocation(locationData);
     }
 
-    // Close modal
-    setLocationSearchModal(false);
+    setShowLocationModal(false);
     setLocationSearchQuery('');
     setLocationSuggestions([]);
   };
@@ -414,7 +454,6 @@ const AlsScreen = () => {
       const data = await response.json();
 
       if (data && data.display_name) {
-        // Calculate distance and fee from office
         const { distance, fee } = calculateDeliveryFeeFromOffice(latitude, longitude);
 
         const locationData: CustomerLocation = {
@@ -427,13 +466,10 @@ const AlsScreen = () => {
           fullDescription: data.display_name,
         };
 
-        // Set both pickup and delivery to current location
         setPickupLocation(locationData);
         setDeliveryLocation(locationData);
         setUseSameLocation(true);
-
-        // Close modal
-        setLocationSearchModal(false);
+        setShowLocationModal(false);
         setLocationSearchQuery('');
         setLocationSuggestions([]);
       }
@@ -448,106 +484,43 @@ const AlsScreen = () => {
   const handleUseSameLocationToggle = (value: boolean) => {
     setUseSameLocation(value);
     if (value && pickupLocation) {
-      // If toggled on and pickup exists, copy pickup to delivery
       setDeliveryLocation(pickupLocation);
     }
   };
 
-  // Handle service option selection
+  // ==================== SERVICE OPTIONS ====================
   const handleServiceOptionChange = (option: ServiceOption) => {
     setServiceOption(option);
     
-    // If any self-service option is selected, bypass minimum order
     if (option === 'self-pickup' || option === 'self-delivery' || option === 'full-self') {
       setBypassMinOrder(true);
     } else {
       setBypassMinOrder(false);
     }
     
-    // Reset locations when changing service option
     if (option === 'delivery') {
       // Keep both locations
     } else if (option === 'self-pickup') {
-      // Customer will drop off at office, so only need delivery location
       setPickupLocation(null);
     } else if (option === 'self-delivery') {
-      // Customer will pick up from office, so only need pickup location
       setDeliveryLocation(null);
     } else if (option === 'full-self') {
-      // Customer handles both pickup and delivery - no locations needed
       setPickupLocation(null);
       setDeliveryLocation(null);
     }
   };
 
-  // Calculate total delivery fee based on service option
-  const calculateTotalDeliveryFee = useCallback(() => {
-    if (serviceOption === 'full-self') {
-      // Customer handles everything themselves - no fee
-      return 0;
-    } else if (serviceOption === 'self-pickup') {
-      // Customer drops off at office, we deliver to them
-      return deliveryLocation?.deliveryFee || 0;
-    } else if (serviceOption === 'self-delivery') {
-      // We pick up from customer, they pick up from office
-      return pickupLocation?.deliveryFee || 0;
-    } else {
-      // Full delivery - both pickup and delivery
-      let total = 0;
-      if (pickupLocation) total += pickupLocation.deliveryFee;
-      if (deliveryLocation) total += deliveryLocation.deliveryFee;
-      return total;
-    }
-  }, [serviceOption, pickupLocation, deliveryLocation]);
-
-  // Calculate total with delivery
-  const calculateTotalWithDelivery = useCallback(() => {
-    return grandTotal + calculateTotalDeliveryFee();
-  }, [grandTotal, calculateTotalDeliveryFee]);
-
-  // Check balance vs total with delivery
-  const isBalanceSufficient = useCallback(() => {
-    const totalWithDelivery = calculateTotalWithDelivery();
-    return totalWithDelivery <= alsUsableAmt;
-  }, [calculateTotalWithDelivery, alsUsableAmt]);
-
-  const getBalanceDeficit = useCallback(() => {
-    const totalWithDelivery = calculateTotalWithDelivery();
-    return Math.max(0, totalWithDelivery - alsUsableAmt);
-  }, [calculateTotalWithDelivery, alsUsableAmt]);
-
-  // Update the useEffect that checks balance vs total
-  useEffect(() => {
-    if (selectedItems.length > 0) {
-      const totalWithDelivery = calculateTotalWithDelivery();
-      if (totalWithDelivery > alsUsableAmt) {
-        console.log("Total with Delivery:", totalWithDelivery);
-        console.log("Usable Balance:", alsUsableAmt);
-        
-        Alert.alert(
-          'Insufficient Balance', 
-          `Total order cost (including delivery) is ₦${totalWithDelivery.toLocaleString()}. Your usable balance is ₦${alsUsableAmt.toLocaleString()}. Kindly load money to make this order.`
-        );
-      }
-    }
-  }, [grandTotal, alsUsableAmt, selectedItems.length, calculateTotalWithDelivery]);
-
-  // Memoized filtered items for performance
+  // ==================== CART OPERATIONS ====================
   const filteredItems = useMemo(() => {
     let filtered = items;
-    
-    // Apply category filter
     if (selectedCategory !== 'All') {
       filtered = filtered.filter(item => item.category === selectedCategory);
     }
-    
-    // Apply search filter
     if (searchTerm) {
       filtered = filtered.filter(item =>
         item.description?.toLowerCase().includes(searchTerm.toLowerCase())
       );
     }
-    
     return filtered;
   }, [items, selectedCategory, searchTerm]);
 
@@ -567,7 +540,7 @@ const AlsScreen = () => {
         price: item.price, 
         quantity: 1,
         category: item.category,
-        instructions: '' // Initialize with empty instructions
+        instructions: ''
       }
     ]);
   };
@@ -609,11 +582,11 @@ const AlsScreen = () => {
     );
   };
 
-  // Special instructions handlers
+  // ==================== INSTRUCTIONS HANDLERS ====================
   const handleAddInstructions = (item: CartItem) => {
     setSelectedItemForInstructions(item);
     setItemInstructions(item.instructions || '');
-    setInstructionsModal(true);
+    setShowInstructionsModal(true);
   };
 
   const handleSaveInstructions = () => {
@@ -626,9 +599,10 @@ const AlsScreen = () => {
         )
       );
     }
-    setInstructionsModal(false);
+    setShowInstructionsModal(false);
     setSelectedItemForInstructions(null);
     setItemInstructions('');
+    setShowCommonInstructions(false);
   };
 
   const handleSelectCommonInstruction = (instruction: string) => {
@@ -644,23 +618,14 @@ const AlsScreen = () => {
     return price * quantity;
   }, []);
 
-  const calculateGrandTotal = useCallback(() => {
-    return selectedItems.reduce((total, item) => total + calculateItemTotal(item.price, item.quantity), 0);
-  }, [selectedItems, calculateItemTotal]);
-
-  // Update grand total when selected items change
-  useEffect(() => {
-    setGrandTotal(calculateGrandTotal());
-  }, [selectedItems, calculateGrandTotal]);
-
+  // ==================== VALIDATION ====================
   const validateProceedToLocation = useCallback(() => {
     if (selectedItems.length === 0) {
       Alert.alert('Cart Empty', 'Please add items to your cart first');
       return false;
     }
 
-    // Skip minimum order check for self-service options
-    if (!bypassMinOrder && grandTotal < 200) {
+    if (!bypassMinOrder && grandTotal < 2000) {
       Alert.alert('Minimum Order Limit', 'Minimum Order of ₦2,000 Required');
       return false;
     }
@@ -677,12 +642,6 @@ const AlsScreen = () => {
     return true;
   }, [selectedItems.length, grandTotal, alsUsableAmt, bypassMinOrder, calculateTotalWithDelivery]);
 
-  const handleProceedToLocation = () => {
-    if (validateProceedToLocation()) {
-      setStep(2);
-    }
-  };
-
   const validateProceedToReview = useCallback(() => {
     if (serviceOption === 'delivery') {
       if (!pickupLocation) {
@@ -694,37 +653,25 @@ const AlsScreen = () => {
         return false;
       }
     } else if (serviceOption === 'self-pickup') {
-      // Customer drops off at office, we deliver to them
       if (!deliveryLocation) {
         Alert.alert('Location Required', 'Please select your delivery location');
         return false;
       }
     } else if (serviceOption === 'self-delivery') {
-      // We pick up from customer, they pick up from office
       if (!pickupLocation) {
         Alert.alert('Location Required', 'Please select your pickup location');
         return false;
       }
-    } else if (serviceOption === 'full-self') {
-      // Customer handles both pickup and delivery - no locations needed
-      // Just show office address for reference
-      return true;
     }
     return true;
   }, [serviceOption, pickupLocation, deliveryLocation]);
 
-  const handleProceedToReview = () => {
-    if (validateProceedToReview()) {
-      setStep(3);
-    }
-  };
-
+  // ==================== ORDER PLACEMENT ====================
   const saveOrder = async () => {
     if (!validateProceedToLocation() || !validateProceedToReview()) {
       return;
     }
 
-    // Refresh balance before final check
     await refreshBalance();
 
     const totalWithDelivery = calculateTotalWithDelivery();
@@ -737,11 +684,10 @@ const AlsScreen = () => {
       return;
     }
 
-    console.log(serviceOption);
     const orderDetails = {
       mobile: mobile,
       amount: grandTotal,
-      total_amount: totalWithDelivery, // Add this for reference
+      total_amount: totalWithDelivery,
       service_option: serviceOption,
       bypass_min_order: bypassMinOrder,
       address: Origin?.description || '',
@@ -752,7 +698,6 @@ const AlsScreen = () => {
         office_lat: COMPANY_OFFICE.lat,
         office_lng: COMPANY_OFFICE.lng,
       },
-      // For pickup_location - send null if conditions not met or values are missing
       pickup_location: (serviceOption !== 'self-pickup' && serviceOption !== 'full-self' && pickupLocation) 
         ? {
             p_address: pickupLocation.address || null,
@@ -765,7 +710,6 @@ const AlsScreen = () => {
           } 
         : null,
       
-      // For delivery_location - send null if conditions not met or values are missing
       delivery_location: (serviceOption !== 'self-delivery' && serviceOption !== 'full-self' && deliveryLocation) 
         ? {
             d_address: deliveryLocation.address || null,
@@ -791,8 +735,6 @@ const AlsScreen = () => {
 
     setLoading(true);
     try {
-      console.log('Sending order:', JSON.stringify(orderDetails));
-      
       const response = await fetch('https://hoog.ng/infiniteorder/api/Customers/alsOrdering.php', {
         method: 'POST',
         headers: { 
@@ -832,7 +774,7 @@ const AlsScreen = () => {
       } else {
         Alert.alert('Error', result.message || 'Failed to place order');
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error saving order:', error);
       Alert.alert('Error', error.message || 'Network error. Please try again.');
     } finally {
@@ -851,6 +793,18 @@ const AlsScreen = () => {
     setSearchTerm('');
     setShowCart(false);
     setOrderInstructions('');
+  };
+
+  const handleProceedToLocation = () => {
+    if (validateProceedToLocation()) {
+      setStep(2);
+    }
+  };
+
+  const handleProceedToReview = () => {
+    if (validateProceedToReview()) {
+      setStep(3);
+    }
   };
 
   const handleScreenChange = (screen: string) => {
@@ -876,315 +830,31 @@ const AlsScreen = () => {
     setActiveScreen('orderHistory');
   };
 
-  // Render location search modal
-  const renderLocationSearchModal = useCallback(() => (
-    <Modal
-      visible={locationSearchModal}
-      animationType="slide"
-      presentationStyle="pageSheet"
-      onRequestClose={() => setLocationSearchModal(false)}
-    >
-      <View style={tw`flex-1 bg-white`}>
-        <View style={tw`flex-row items-center p-4 border-b border-[${COLORS.border}]`}>
-          <TouchableOpacity 
-            onPress={() => setLocationSearchModal(false)} 
-            style={tw`p-2`}
-          >
-            <Ionicons name="arrow-back" size={24} color={COLORS.text.primary} />
-          </TouchableOpacity>
-          <Text style={tw`flex-1 text-center font-medium text-base`}>
-            {locationSearchType === 'pickup' ? 'Pickup Location' : 'Delivery Location'}
-          </Text>
-          <View style={tw`w-10`} />
-        </View>
-
-        <View style={tw`p-4`}>
-          <View style={tw`flex-row items-center bg-[${COLORS.surface}] rounded-lg px-3 border border-[${COLORS.border}]`}>
-            <Ionicons name="search" size={20} color={COLORS.text.light} />
-            <TextInput
-              style={tw`flex-1 p-3 text-[${COLORS.text.primary}]`}
-              placeholder="Search for location"
-              placeholderTextColor={COLORS.text.light}
-              value={locationSearchQuery}
-              onChangeText={handleLocationSearchChange}
-              autoCapitalize="none"
-              autoCorrect={false}
-            />
-            {searchingLocation && (
-              <ActivityIndicator size="small" color={COLORS.gold} />
-            )}
-            {locationSearchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => {
-                setLocationSearchQuery('');
-                setLocationSuggestions([]);
-              }}>
-                <Ionicons name="close-circle" size={20} color={COLORS.text.light} />
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-
-        {locationSearchQuery.length < 3 ? (
-          <ScrollView style={tw`flex-1`}>
-            {/* Current Location Option */}
-            <TouchableOpacity
-              style={tw`flex-row items-center p-4 border-b border-[${COLORS.border}]`}
-              onPress={handleUseCurrentLocation}
-            >
-              <View style={tw`w-10 h-10 rounded-full bg-[${COLORS.gold}]/10 items-center justify-center mr-3`}>
-                <Ionicons name="locate" size={20} color={COLORS.gold} />
-              </View>
-              <View>
-                <Text style={tw`text-[${COLORS.text.primary}] font-medium`}>
-                  Use Current Location
-                </Text>
-                <Text style={tw`text-[${COLORS.text.light}] text-xs mt-1`}>
-                  Automatically detect your location
-                </Text>
-              </View>
-            </TouchableOpacity>
-            
-            <View style={tw`p-4`}>
-              <Text style={tw`text-[${COLORS.text.light}] text-center`}>
-                Enter at least 3 characters to search for a specific address
-              </Text>
-            </View>
-          </ScrollView>
-        ) : (
-          <FlatList
-            data={locationSuggestions}
-            keyExtractor={(item) => item.place_id.toString()}
-            renderItem={({ item }) => (
-              <TouchableOpacity
-                style={tw`flex-row items-center px-4 py-3 border-b border-[${COLORS.border}]`}
-                onPress={() => handleSelectLocation(item)}
-              >
-                <View style={tw`w-10 h-10 rounded-full bg-[${COLORS.surface}] items-center justify-center mr-3`}>
-                  <Ionicons name="location" size={20} color={COLORS.text.secondary} />
-                </View>
-                <View style={tw`flex-1`}>
-                  <Text style={tw`text-[${COLORS.text.primary}] font-medium`}>
-                    {item.structured_formatting.main_text}
-                  </Text>
-                  <Text style={tw`text-[${COLORS.text.light}] text-xs mt-1`} numberOfLines={1}>
-                    {item.structured_formatting.secondary_text || item.description}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            )}
-            ListEmptyComponent={
-              searchingLocation ? (
-                <View style={tw`items-center justify-center py-10`}>
-                  <ActivityIndicator size="large" color={COLORS.gold} />
-                  <Text style={tw`text-[${COLORS.text.light}] mt-2`}>Searching...</Text>
-                </View>
-              ) : null
-            }
-          />
-        )}
-      </View>
-    </Modal>
-  ), [locationSearchModal, locationSearchType, locationSearchQuery, locationSuggestions, searchingLocation]);
-
-  // Render item instructions modal
-  const renderInstructionsModal = useCallback(() => (
-    <Modal
-      visible={instructionsModal}
-      animationType="slide"
-      transparent={true}
-      onRequestClose={() => setInstructionsModal(false)}
-    >
-      <View style={tw`flex-1 bg-black/50 justify-end`}>
-        <View style={tw`bg-white rounded-t-3xl`}>
-          <View style={tw`items-center pt-2`}>
-            <View style={tw`w-12 h-1 bg-gray-300 rounded-full`} />
-          </View>
-          
-          <View style={tw`p-4`}>
-            <View style={tw`flex-row justify-between items-center mb-4`}>
-              <Text style={tw`text-xl font-bold text-[${COLORS.text.primary}]`}>
-                Special Instructions
-              </Text>
-              <TouchableOpacity onPress={() => setInstructionsModal(false)}>
-                <Ionicons name="close" size={24} color={COLORS.text.primary} />
-              </TouchableOpacity>
-            </View>
-
-            {selectedItemForInstructions && (
-              <Text style={tw`text-[${COLORS.gold}] font-medium mb-2`}>
-                For: {selectedItemForInstructions.description}
-              </Text>
-            )}
-
-            <TextInput
-              style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] text-[${COLORS.text.primary}] mb-3 min-h-[100px]`}
-              placeholder="E.g., No starch, Extra soft, Hand wash only, etc."
-              placeholderTextColor={COLORS.text.light}
-              value={itemInstructions}
-              onChangeText={setItemInstructions}
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
-            />
-
-            {/* Common Instructions Toggle */}
-            <TouchableOpacity
-              style={tw`flex-row items-center mb-3`}
-              onPress={() => setShowCommonInstructions(!showCommonInstructions)}
-            >
-              <Ionicons 
-                name={showCommonInstructions ? "chevron-up" : "chevron-down"} 
-                size={20} 
-                color={COLORS.gold} 
-              />
-              <Text style={tw`text-[${COLORS.gold}] font-medium ml-2`}>
-                Common Instructions
-              </Text>
-            </TouchableOpacity>
-
-            {/* Common Instructions List */}
-            {showCommonInstructions && (
-              <ScrollView 
-                horizontal 
-                showsHorizontalScrollIndicator={false}
-                style={tw`mb-4`}
-              >
-                <View style={tw`flex-row`}>
-                  {COMMON_INSTRUCTIONS.map((instruction, index) => (
-                    <TouchableOpacity
-                      key={index}
-                      style={tw`bg-[${COLORS.surface}] px-3 py-2 rounded-full mr-2 border border-[${COLORS.border}]`}
-                      onPress={() => handleSelectCommonInstruction(instruction)}
-                    >
-                      <Text style={tw`text-[${COLORS.text.primary}] text-sm`}>
-                        {instruction}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </ScrollView>
-            )}
-
-            <View style={tw`flex-row mt-4`}>
-              <TouchableOpacity
-                style={tw`flex-1 bg-[${COLORS.surface}] py-3 rounded-xl mr-2 border border-[${COLORS.border}]`}
-                onPress={() => {
-                  setInstructionsModal(false);
-                  setItemInstructions('');
-                  setShowCommonInstructions(false);
-                }}
-              >
-                <Text style={tw`text-[${COLORS.text.primary}] text-center font-medium`}>
-                  Cancel
-                </Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                style={tw`flex-1 bg-[${COLORS.gold}] py-3 rounded-xl ml-2`}
-                onPress={() => {
-                  handleSaveInstructions();
-                  setShowCommonInstructions(false);
-                }}
-              >
-                <Text style={tw`text-white text-center font-bold`}>
-                  Save
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  ), [instructionsModal, selectedItemForInstructions, itemInstructions, showCommonInstructions]);
-
-  // Render order instructions modal
-  const renderOrderInstructionsModal = useCallback(() => (
-    <Modal
-      visible={orderInstructionsModal}
-      animationType="slide"
-      transparent={true}
-      onRequestClose={() => setOrderInstructionsModal(false)}
-    >
-      <View style={tw`flex-1 bg-black/50 justify-end`}>
-        <View style={tw`bg-white rounded-t-3xl`}>
-          <View style={tw`items-center pt-2`}>
-            <View style={tw`w-12 h-1 bg-gray-300 rounded-full`} />
-          </View>
-          
-          <View style={tw`p-4`}>
-            <View style={tw`flex-row justify-between items-center mb-4`}>
-              <Text style={tw`text-xl font-bold text-[${COLORS.text.primary}]`}>
-                Order Instructions
-              </Text>
-              <TouchableOpacity onPress={() => setOrderInstructionsModal(false)}>
-                <Ionicons name="close" size={24} color={COLORS.text.primary} />
-              </TouchableOpacity>
-            </View>
-
-            <Text style={tw`text-[${COLORS.text.secondary}] mb-2`}>
-              Add any general instructions for your entire order
-            </Text>
-
-            <TextInput
-              style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] text-[${COLORS.text.primary}] mb-4 min-h-[120px]`}
-              placeholder="E.g., Please call before pickup, Leave at doorstep, etc."
-              placeholderTextColor={COLORS.text.light}
-              value={orderInstructions}
-              onChangeText={setOrderInstructions}
-              multiline
-              numberOfLines={5}
-              textAlignVertical="top"
-            />
-
-            <View style={tw`flex-row mt-2`}>
-              <TouchableOpacity
-                style={tw`flex-1 bg-[${COLORS.surface}] py-3 rounded-xl mr-2 border border-[${COLORS.border}]`}
-                onPress={() => setOrderInstructionsModal(false)}
-              >
-                <Text style={tw`text-[${COLORS.text.primary}] text-center font-medium`}>
-                  Cancel
-                </Text>
-              </TouchableOpacity>
-              
-              <TouchableOpacity
-                style={tw`flex-1 bg-[${COLORS.gold}] py-3 rounded-xl ml-2`}
-                onPress={() => setOrderInstructionsModal(false)}
-              >
-                <Text style={tw`text-white text-center font-bold`}>
-                  Save
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </View>
-    </Modal>
-  ), [orderInstructionsModal, orderInstructions]);
-
-  // Render functions with proper memoization
-  const renderCategoryTabs = useCallback(() => {
+  // ==================== RENDER FUNCTIONS ====================
+  const renderCategoryTabs = () => {
     if (categories.length === 0) return null;
     
     return (
       <ScrollView 
         horizontal 
         showsHorizontalScrollIndicator={false}
-        style={tw`py-3`}
+        style={tw`py-2`}
         contentContainerStyle={tw`px-4`}
       >
         {categories.map((category) => (
           <TouchableOpacity
             key={category}
             style={[
-              tw`mr-3 px-4 py-2 rounded-full`,
+              tw`mr-2 px-4 py-2 rounded-full`,
               selectedCategory === category
                 ? tw`bg-[${COLORS.gold}]`
                 : tw`bg-white border border-[${COLORS.border}]`
             ]}
             onPress={() => setSelectedCategory(category)}
+            activeOpacity={0.7}
           >
             <Text style={[
-              tw`font-medium`,
+              tw`text-sm font-medium`,
               selectedCategory === category ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
             ]}>
               {category}
@@ -1193,10 +863,122 @@ const AlsScreen = () => {
         ))}
       </ScrollView>
     );
-  }, [categories, selectedCategory]);
+  };
 
-  // Render cart sidebar
-  const renderCartSidebar = useCallback(() => {
+  const renderServiceOptions = () => (
+    <View style={tw`px-4 py-3 bg-white border-b border-[${COLORS.border}]`}>
+      <Text style={tw`text-[${COLORS.text.primary}] font-medium mb-2 text-sm`}>Service Option</Text>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <View style={tw`flex-row`}>
+          <TouchableOpacity
+            style={[
+              tw`px-3 py-2 rounded-lg mr-2 border`,
+              serviceOption === 'delivery' 
+                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
+                : tw`bg-white border-[${COLORS.border}]`
+            ]}
+            onPress={() => handleServiceOptionChange('delivery')}
+            activeOpacity={0.7}
+          >
+            <Text style={[
+              tw`text-center text-sm font-medium`,
+              serviceOption === 'delivery' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
+            ]}>
+              Full Delivery
+            </Text>
+            <Text style={[
+              tw`text-center text-xs mt-1`,
+              serviceOption === 'delivery' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
+            ]}>
+              We pick & deliver
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              tw`px-3 py-2 rounded-lg mr-2 border`,
+              serviceOption === 'self-pickup' 
+                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
+                : tw`bg-white border-[${COLORS.border}]`
+            ]}
+            onPress={() => handleServiceOptionChange('self-pickup')}
+            activeOpacity={0.7}
+          >
+            <Text style={[
+              tw`text-center text-sm font-medium`,
+              serviceOption === 'self-pickup' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
+            ]}>
+              Self Pickup
+            </Text>
+            <Text style={[
+              tw`text-center text-xs mt-1`,
+              serviceOption === 'self-pickup' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
+            ]}>
+              You drop, we deliver
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              tw`px-3 py-2 rounded-lg mr-2 border`,
+              serviceOption === 'self-delivery' 
+                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
+                : tw`bg-white border-[${COLORS.border}]`
+            ]}
+            onPress={() => handleServiceOptionChange('self-delivery')}
+            activeOpacity={0.7}
+          >
+            <Text style={[
+              tw`text-center text-sm font-medium`,
+              serviceOption === 'self-delivery' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
+            ]}>
+              Self Delivery
+            </Text>
+            <Text style={[
+              tw`text-center text-xs mt-1`,
+              serviceOption === 'self-delivery' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
+            ]}>
+              We pick, you collect
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              tw`px-3 py-2 rounded-lg border`,
+              serviceOption === 'full-self' 
+                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
+                : tw`bg-white border-[${COLORS.border}]`
+            ]}
+            onPress={() => handleServiceOptionChange('full-self')}
+            activeOpacity={0.7}
+          >
+            <Text style={[
+              tw`text-center text-sm font-medium`,
+              serviceOption === 'full-self' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
+            ]}>
+              Full Self
+            </Text>
+            <Text style={[
+              tw`text-center text-xs mt-1`,
+              serviceOption === 'full-self' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
+            ]}>
+              You pick & deliver
+            </Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+      
+      {bypassMinOrder && (
+        <View style={tw`mt-2 p-2 bg-green-100 rounded-lg`}>
+          <Text style={tw`text-green-700 text-xs text-center`}>
+            Minimum order of ₦2,000 is waived for self-service options
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+
+  const renderCartSidebar = () => {
     const totalWithDelivery = calculateTotalWithDelivery();
     const isSufficient = isBalanceSufficient();
     const deficit = getBalanceDeficit();
@@ -1209,7 +991,7 @@ const AlsScreen = () => {
         onRequestClose={() => setShowCart(false)}
       >
         <View style={tw`flex-1 bg-black/50`}>
-          <View style={tw`absolute bottom-0 left-0 right-0 bg-white rounded-t-3xl max-h-[85%]`}>
+          <View style={tw`absolute bottom-10 left-0 right-0 bg-white rounded-t-3xl max-h-[85%]`}>
             <View style={tw`items-center pt-2`}>
               <View style={tw`w-12 h-1 bg-gray-300 rounded-full`} />
             </View>
@@ -1219,7 +1001,7 @@ const AlsScreen = () => {
                 <Text style={tw`text-xl font-bold text-[${COLORS.text.primary}]`}>
                   Your Cart ({selectedItems.length} items)
                 </Text>
-                <TouchableOpacity onPress={() => setShowCart(false)}>
+                <TouchableOpacity onPress={() => setShowCart(false)} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
                   <Ionicons name="close" size={24} color={COLORS.text.primary} />
                 </TouchableOpacity>
               </View>
@@ -1249,7 +1031,6 @@ const AlsScreen = () => {
                               ₦{item.price.toLocaleString()}
                             </Text>
                             
-                            {/* Show instructions indicator */}
                             {item.instructions ? (
                               <View style={tw`flex-row items-center mt-1`}>
                                 <Ionicons name="document-text" size={14} color={COLORS.gold} />
@@ -1264,6 +1045,8 @@ const AlsScreen = () => {
                             <TouchableOpacity
                               style={tw`w-8 h-8 bg-[${COLORS.surface}] rounded-full items-center justify-center`}
                               onPress={() => handleQuantityChange(item.id, 'decrement')}
+                              activeOpacity={0.7}
+                              hitSlop={{top: 5, bottom: 5, left: 5, right: 5}}
                             >
                               <Text style={tw`text-lg font-bold text-[${COLORS.text.primary}]`}>-</Text>
                             </TouchableOpacity>
@@ -1273,16 +1056,19 @@ const AlsScreen = () => {
                             <TouchableOpacity
                               style={tw`w-8 h-8 bg-[${COLORS.surface}] rounded-full items-center justify-center`}
                               onPress={() => handleQuantityChange(item.id, 'increment')}
+                              activeOpacity={0.7}
+                              hitSlop={{top: 5, bottom: 5, left: 5, right: 5}}
                             >
                               <Text style={tw`text-lg font-bold text-[${COLORS.text.primary}]`}>+</Text>
                             </TouchableOpacity>
                           </View>
                         </View>
 
-                        {/* Instructions button */}
                         <TouchableOpacity
                           style={tw`flex-row items-center mt-2 ml-15`}
                           onPress={() => handleAddInstructions(item)}
+                          activeOpacity={0.7}
+                          hitSlop={{top: 5, bottom: 5, left: 5, right: 5}}
                         >
                           <Ionicons 
                             name={item.instructions ? "create" : "add-circle-outline"} 
@@ -1300,6 +1086,8 @@ const AlsScreen = () => {
                         <TouchableOpacity
                           onPress={() => handleItemRemoval(item.id)}
                           style={tw`absolute right-0 top-12`}
+                          activeOpacity={0.7}
+                          hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
                         >
                           <MaterialCommunityIcons name="trash-can" size={20} color="red" />
                         </TouchableOpacity>
@@ -1309,10 +1097,10 @@ const AlsScreen = () => {
                     showsVerticalScrollIndicator={false}
                   />
 
-                  {/* Order Instructions Button */}
                   <TouchableOpacity
                     style={tw`flex-row items-center justify-between mt-4 p-3 bg-[${COLORS.surface}] rounded-xl border border-[${COLORS.border}]`}
-                    onPress={() => setOrderInstructionsModal(true)}
+                    onPress={() => setShowOrderInstructionsModal(true)}
+                    activeOpacity={0.7}
                   >
                     <View style={tw`flex-row items-center`}>
                       <Ionicons name="document-text-outline" size={22} color={COLORS.gold} />
@@ -1359,7 +1147,6 @@ const AlsScreen = () => {
                       </Text>
                     </View>
 
-                    {/* Balance check warning */}
                     {!isSufficient && (
                       <View style={tw`bg-red-50 p-3 rounded-lg mt-2`}>
                         <View style={tw`flex-row items-center`}>
@@ -1376,7 +1163,6 @@ const AlsScreen = () => {
                       </View>
                     )}
                     
-                    {/* Available balance display */}
                     <View style={tw`bg-[${COLORS.surface}] p-3 rounded-lg mt-2`}>
                       <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
                         Available Balance: ₦{alsUsableAmt.toLocaleString()}
@@ -1392,8 +1178,9 @@ const AlsScreen = () => {
                         handleProceedToLocation();
                       }}
                       disabled={!isSufficient}
+                      activeOpacity={0.7}
                     >
-                      <Text style={tw`text-white font-bold text-lg`}>Proceed to Checkout</Text>
+                      <Text style={tw`text-white font-bold text-base`}>Proceed to Checkout</Text>
                     </TouchableOpacity>
                   </View>
                 </>
@@ -1403,127 +1190,16 @@ const AlsScreen = () => {
         </View>
       </Modal>
     );
-  }, [showCart, selectedItems, grandTotal, pickupLocation, deliveryLocation, orderInstructions, alsUsableAmt, calculateTotalDeliveryFee, calculateTotalWithDelivery, isBalanceSufficient, getBalanceDeficit]);
+  };
 
-  // Render service option selector
-  const renderServiceOptions = useCallback(() => (
-    <View style={tw`px-4 py-3 bg-white border-b border-[${COLORS.border}]`}>
-      <Text style={tw`text-[${COLORS.text.primary}] font-medium mb-2`}>Service Option</Text>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-        <View style={tw`flex-row`}>
-          <TouchableOpacity
-            style={[
-              tw`px-4 py-3 rounded-lg mr-2 border min-w-[100px]`,
-              serviceOption === 'delivery' 
-                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
-                : tw`bg-white border-[${COLORS.border}]`
-            ]}
-            onPress={() => handleServiceOptionChange('delivery')}
-          >
-            <Text style={[
-              tw`text-center font-medium`,
-              serviceOption === 'delivery' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
-            ]}>
-              Full Delivery
-            </Text>
-            <Text style={[
-              tw`text-center text-xs mt-1`,
-              serviceOption === 'delivery' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
-            ]}>
-              We pick & deliver
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              tw`px-4 py-3 rounded-lg mr-2 border min-w-[100px]`,
-              serviceOption === 'self-pickup' 
-                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
-                : tw`bg-white border-[${COLORS.border}]`
-            ]}
-            onPress={() => handleServiceOptionChange('self-pickup')}
-          >
-            <Text style={[
-              tw`text-center font-medium`,
-              serviceOption === 'self-pickup' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
-            ]}>
-              Self Pickup
-            </Text>
-            <Text style={[
-              tw`text-center text-xs mt-1`,
-              serviceOption === 'self-pickup' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
-            ]}>
-              You drop, we deliver
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              tw`px-4 py-3 rounded-lg mr-2 border min-w-[100px]`,
-              serviceOption === 'self-delivery' 
-                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
-                : tw`bg-white border-[${COLORS.border}]`
-            ]}
-            onPress={() => handleServiceOptionChange('self-delivery')}
-          >
-            <Text style={[
-              tw`text-center font-medium`,
-              serviceOption === 'self-delivery' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
-            ]}>
-              Self Delivery
-            </Text>
-            <Text style={[
-              tw`text-center text-xs mt-1`,
-              serviceOption === 'self-delivery' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
-            ]}>
-              We pick, you collect
-            </Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              tw`px-4 py-3 rounded-lg border min-w-[100px]`,
-              serviceOption === 'full-self' 
-                ? tw`bg-[${COLORS.gold}] border-[${COLORS.gold}]` 
-                : tw`bg-white border-[${COLORS.border}]`
-            ]}
-            onPress={() => handleServiceOptionChange('full-self')}
-          >
-            <Text style={[
-              tw`text-center font-medium`,
-              serviceOption === 'full-self' ? tw`text-white` : tw`text-[${COLORS.text.primary}]`
-            ]}>
-              Full Self
-            </Text>
-            <Text style={[
-              tw`text-center text-xs mt-1`,
-              serviceOption === 'full-self' ? tw`text-white/80` : tw`text-[${COLORS.text.light}]`
-            ]}>
-              You pick & deliver
-            </Text>
-          </TouchableOpacity>
-        </View>
-      </ScrollView>
-      
-      {/* Info message for bypassing minimum order */}
-      {bypassMinOrder && (
-        <View style={tw`mt-3 p-2 bg-green-100 rounded-lg`}>
-          <Text style={tw`text-green-700 text-xs text-center`}>
-            Minimum order of ₦2,000 is waived for self-service options
-          </Text>
-        </View>
-      )}
-    </View>
-  ), [serviceOption, bypassMinOrder]);
-
-  const renderLocationStep = useCallback(() => {
+  const renderLocationStep = () => {
     const totalWithDelivery = calculateTotalWithDelivery();
     const isSufficient = isBalanceSufficient();
 
     return (
       <View style={tw`flex-1 bg-white`}>
-        <View style={tw`bg-[${COLORS.gold}] p-4`}>
-          <TouchableOpacity onPress={() => setStep(1)} style={tw`mb-2`}>
+        <View style={tw`bg-[${COLORS.gold}] p-4 ${Platform.OS === 'ios' ? 'pt-12' : 'pt-4'}`}>
+          <TouchableOpacity onPress={() => setStep(1)} style={tw`mb-2`} activeOpacity={0.7} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
             <Ionicons name="arrow-back" size={24} color="white" />
           </TouchableOpacity>
           <Text style={tw`text-white text-xl font-bold`}>
@@ -1532,14 +1208,13 @@ const AlsScreen = () => {
           <Text style={tw`text-white/80 text-sm mt-1`}>Step 2 of 3</Text>
         </View>
 
-        {/* Balance Summary at top */}
         <View style={tw`px-4 py-2 bg-yellow-50 border-b border-yellow-200`}>
           <View style={tw`flex-row justify-between items-center`}>
-            <Text style={tw`text-[${COLORS.text.secondary}]`}>Total Cost:</Text>
+            <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>Total Cost:</Text>
             <Text style={tw`text-[${COLORS.gold}] font-bold`}>₦{totalWithDelivery.toLocaleString()}</Text>
           </View>
           <View style={tw`flex-row justify-between items-center mt-1`}>
-            <Text style={tw`text-[${COLORS.text.secondary}]`}>Your Balance:</Text>
+            <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>Your Balance:</Text>
             <Text style={tw`${isSufficient ? 'text-green-600' : 'text-red-600'} font-bold`}>
               ₦{alsUsableAmt.toLocaleString()}
             </Text>
@@ -1553,263 +1228,367 @@ const AlsScreen = () => {
           )}
         </View>
 
-        {/* Service Options at the top of location step */}
         {renderServiceOptions()}
 
-        <ScrollView style={tw`p-4`} showsVerticalScrollIndicator={false}>
-          {/* Company Office Info - Always show this */}
-          <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
-            <View style={tw`flex-row items-center mb-2`}>
-              <Ionicons name="business" size={20} color={COLORS.gold} />
-              <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Our Office</Text>
-            </View>
-            <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>{COMPANY_OFFICE.address}</Text>
-          </View>
-
-          {/* For full-self option, we only show office info */}
-          {serviceOption === 'full-self' ? (
-            <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-6`}>
+        <ScrollView 
+          style={tw`flex-1`} 
+          showsVerticalScrollIndicator={true}
+          contentContainerStyle={tw`pb-20`}
+        >
+          <View style={tw`p-4`}>
+            <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
               <View style={tw`flex-row items-center mb-2`}>
-                <Ionicons name="checkmark-circle" size={20} color={COLORS.gold} />
-                <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Fully Self-Service</Text>
+                <Ionicons name="business" size={20} color={COLORS.gold} />
+                <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Our Office</Text>
               </View>
-              <Text style={tw`text-[${COLORS.text.secondary}] text-sm mb-2`}>
-                You will handle both pickup and delivery yourself.
-              </Text>
-              <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>
-                Please visit our office address above to drop off and collect your laundry.
-              </Text>
+              <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>{COMPANY_OFFICE.address}</Text>
             </View>
-          ) : (
-            <>
-              {/* Same Location Toggle - Only show for full delivery */}
-              {serviceOption === 'delivery' && (
-                <View style={tw`flex-row items-center justify-between bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
-                  <View style={tw`flex-1`}>
-                    <Text style={tw`text-[${COLORS.text.primary}] font-medium`}>Same for Pickup & Delivery</Text>
-                    <Text style={tw`text-[${COLORS.text.light}] text-xs mt-1`}>
-                      Use the same address for both
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    onPress={() => handleUseSameLocationToggle(!useSameLocation)}
-                    style={[
-                      tw`w-12 h-6 rounded-full p-1`,
-                      useSameLocation ? tw`bg-[${COLORS.gold}]` : tw`bg-gray-300`
-                    ]}
-                  >
-                    <View style={[
-                      tw`w-4 h-4 rounded-full bg-white`,
-                      useSameLocation ? tw`ml-6` : tw`ml-0`
-                    ]} />
-                  </TouchableOpacity>
+
+            {serviceOption === 'full-self' ? (
+              <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-6`}>
+                <View style={tw`flex-row items-center mb-2`}>
+                  <Ionicons name="checkmark-circle" size={20} color={COLORS.gold} />
+                  <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Fully Self-Service</Text>
                 </View>
-              )}
-
-              {/* Pickup Location - Show for full delivery and self-delivery */}
-              {(serviceOption === 'delivery' || serviceOption === 'self-delivery') && (
-                <TouchableOpacity
-                  style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}
-                  onPress={() => {
-                    console.log('Opening pickup modal'); // Debug log
-                    setLocationSearchType('pickup');
-                    setLocationSearchModal(true);
-                  }}
-                >
-                  <Text style={tw`text-[${COLORS.text.light}] text-xs mb-1`}>
-                    {serviceOption === 'self-delivery' ? 'PICKUP LOCATION (WE WILL COLLECT FROM)' : 'PICKUP LOCATION'}
-                  </Text>
-                  {pickupLocation ? (
-                    <>
-                      <Text style={tw`text-[${COLORS.text.primary}] font-medium text-lg`}>
-                        {pickupLocation.city}
-                      </Text>
-                      <Text style={tw`text-[${COLORS.text.light}] text-sm mt-1`} numberOfLines={2}>
-                        {pickupLocation.address}
-                      </Text>
-                      <View style={tw`flex-row justify-between mt-2 pt-2 border-t border-[${COLORS.border}]`}>
-                        <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
-                          Distance: {pickupLocation.distanceFromOffice}km from office
-                        </Text>
-                        <Text style={tw`text-[${COLORS.gold}] font-bold`}>
-                          ₦{pickupLocation.deliveryFee}
-                        </Text>
-                      </View>
-                    </>
-                  ) : (
-                    <Text style={tw`text-[${COLORS.text.light}]`}>Select pickup location</Text>
-                  )}
-                  <Ionicons name="chevron-down" size={20} color={COLORS.text.light} style={tw`absolute right-4 top-4`} />
-                </TouchableOpacity>
-              )}
-
-              {/* Delivery Location - Show for full delivery and self-pickup */}
-              {(serviceOption === 'delivery' || serviceOption === 'self-pickup') && (
-                <TouchableOpacity
-                  style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] ${serviceOption === 'delivery' && !useSameLocation ? 'mb-6' : 'mb-6'}`}
-                  onPress={() => {
-                    console.log('Opening delivery modal'); // Debug log
-                    setLocationSearchType('delivery');
-                    setLocationSearchModal(true);
-                  }}
-                >
-                  <Text style={tw`text-[${COLORS.text.light}] text-xs mb-1`}>
-                    {serviceOption === 'self-pickup' ? 'DELIVERY LOCATION (WE WILL DELIVER TO)' : 'DELIVERY LOCATION'}
-                  </Text>
-                  {deliveryLocation ? (
-                    <>
-                      <Text style={tw`text-[${COLORS.text.primary}] font-medium text-lg`}>
-                        {deliveryLocation.city}
-                      </Text>
-                      <Text style={tw`text-[${COLORS.text.light}] text-sm mt-1`} numberOfLines={2}>
-                        {deliveryLocation.address}
-                      </Text>
-                      <View style={tw`flex-row justify-between mt-2 pt-2 border-t border-[${COLORS.border}]`}>
-                        <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
-                          Distance: {deliveryLocation.distanceFromOffice}km from office
-                        </Text>
-                        <Text style={tw`text-[${COLORS.gold}] font-bold`}>
-                          ₦{deliveryLocation.deliveryFee}
-                        </Text>
-                      </View>
-                    </>
-                  ) : (
-                    <Text style={tw`text-[${COLORS.text.light}]`}>Select delivery location</Text>
-                  )}
-                  <Ionicons name="chevron-down" size={20} color={COLORS.text.light} style={tw`absolute right-4 top-4`} />
-                </TouchableOpacity>
-              )}
-
-              {/* Show message for self-pickup */}
-              {serviceOption === 'self-pickup' && (
-                <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
-                  <View style={tw`flex-row items-center mb-2`}>
-                    <Ionicons name="information-circle" size={20} color={COLORS.gold} />
-                    <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Self-Pickup Instructions</Text>
-                  </View>
-                  <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>
-                    Please drop off your laundry at our office address above. We will deliver to your delivery location when ready.
-                  </Text>
-                </View>
-              )}
-
-              {/* Show message for self-delivery */}
-              {serviceOption === 'self-delivery' && (
-                <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
-                  <View style={tw`flex-row items-center mb-2`}>
-                    <Ionicons name="information-circle" size={20} color={COLORS.gold} />
-                    <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Self-Delivery Instructions</Text>
-                  </View>
-                  <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>
-                    We will pick up your laundry from your pickup location. You can collect it from our office when ready.
-                  </Text>
-                </View>
-              )}
-
-              {/* Total Delivery Fee Preview - Only if there are fees */}
-              {calculateTotalDeliveryFee() > 0 && (
-                <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-6`}>
-                  <Text style={tw`text-[${COLORS.text.primary}] font-medium mb-2`}>Total Service Fee</Text>
-                  <View style={tw`flex-row justify-between items-center`}>
-                    <View>
-                      {serviceOption === 'delivery' && pickupLocation && (
-                        <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
-                          Pickup: ₦{pickupLocation.deliveryFee}
-                        </Text>
-                      )}
-                      {serviceOption === 'delivery' && deliveryLocation && (
-                        <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
-                          Delivery: ₦{deliveryLocation.deliveryFee}
-                        </Text>
-                      )}
-                      {serviceOption === 'self-pickup' && deliveryLocation && (
-                        <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
-                          Delivery Fee: ₦{deliveryLocation.deliveryFee}
-                        </Text>
-                      )}
-                      {serviceOption === 'self-delivery' && pickupLocation && (
-                        <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
-                          Pickup Fee: ₦{pickupLocation.deliveryFee}
-                        </Text>
-                      )}
-                      <Text style={tw`text-[${COLORS.text.secondary}] text-xs mt-1`}>
-                        Base fee: ₦{BASE_DELIVERY_FEE} included
+                <Text style={tw`text-[${COLORS.text.secondary}] text-sm mb-2`}>
+                  You will handle both pickup and delivery yourself.
+                </Text>
+                <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>
+                  Please visit our office address above to drop off and collect your laundry.
+                </Text>
+              </View>
+            ) : (
+              <>
+                {serviceOption === 'delivery' && (
+                  <View style={tw`flex-row items-center justify-between bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
+                    <View style={tw`flex-1`}>
+                      <Text style={tw`text-[${COLORS.text.primary}] font-medium`}>Same for Pickup & Delivery</Text>
+                      <Text style={tw`text-[${COLORS.text.light}] text-xs mt-1`}>
+                        Use the same address for both
                       </Text>
                     </View>
-                    <Text style={tw`text-[${COLORS.gold}] font-bold text-xl`}>
-                      ₦{calculateTotalDeliveryFee().toLocaleString()}
+                    <TouchableOpacity
+                      onPress={() => handleUseSameLocationToggle(!useSameLocation)}
+                      style={[
+                        tw`w-12 h-6 rounded-full p-1`,
+                        useSameLocation ? tw`bg-[${COLORS.gold}]` : tw`bg-gray-300`
+                      ]}
+                      activeOpacity={0.7}
+                    >
+                      <View style={[
+                        tw`w-4 h-4 rounded-full bg-white`,
+                        useSameLocation ? tw`ml-6` : tw`ml-0`
+                      ]} />
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {(serviceOption === 'delivery' || serviceOption === 'self-delivery') && (
+                  <TouchableOpacity
+                    style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}
+                    onPress={() => {
+                      setLocationSearchType('pickup');
+                      setShowLocationModal(true);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={tw`text-[${COLORS.text.light}] text-xs mb-1`}>
+                      {serviceOption === 'self-delivery' ? 'PICKUP LOCATION (WE WILL COLLECT FROM)' : 'PICKUP LOCATION'}
+                    </Text>
+                    {pickupLocation ? (
+                      <>
+                        <Text style={tw`text-[${COLORS.text.primary}] font-medium text-base`}>
+                          {pickupLocation.city}
+                        </Text>
+                        <Text style={tw`text-[${COLORS.text.light}] text-sm mt-1`} numberOfLines={2}>
+                          {pickupLocation.address}
+                        </Text>
+                        <View style={tw`flex-row justify-between mt-2 pt-2 border-t border-[${COLORS.border}]`}>
+                          <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
+                            Distance: {pickupLocation.distanceFromOffice}km from office
+                          </Text>
+                          <Text style={tw`text-[${COLORS.gold}] font-bold`}>
+                            ₦{pickupLocation.deliveryFee}
+                          </Text>
+                        </View>
+                      </>
+                    ) : (
+                      <Text style={tw`text-[${COLORS.text.light}]`}>Select pickup location</Text>
+                    )}
+                    <Ionicons name="chevron-down" size={20} color={COLORS.text.light} style={tw`absolute right-4 top-4`} />
+                  </TouchableOpacity>
+                )}
+
+                {(serviceOption === 'delivery' || serviceOption === 'self-pickup') && (
+                  <TouchableOpacity
+                    style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-6`}
+                    onPress={() => {
+                      setLocationSearchType('delivery');
+                      setShowLocationModal(true);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={tw`text-[${COLORS.text.light}] text-xs mb-1`}>
+                      {serviceOption === 'self-pickup' ? 'DELIVERY LOCATION (WE WILL DELIVER TO)' : 'DELIVERY LOCATION'}
+                    </Text>
+                    {deliveryLocation ? (
+                      <>
+                        <Text style={tw`text-[${COLORS.text.primary}] font-medium text-base`}>
+                          {deliveryLocation.city}
+                        </Text>
+                        <Text style={tw`text-[${COLORS.text.light}] text-sm mt-1`} numberOfLines={2}>
+                          {deliveryLocation.address}
+                        </Text>
+                        <View style={tw`flex-row justify-between mt-2 pt-2 border-t border-[${COLORS.border}]`}>
+                          <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
+                            Distance: {deliveryLocation.distanceFromOffice}km from office
+                          </Text>
+                          <Text style={tw`text-[${COLORS.gold}] font-bold`}>
+                            ₦{deliveryLocation.deliveryFee}
+                          </Text>
+                        </View>
+                      </>
+                    ) : (
+                      <Text style={tw`text-[${COLORS.text.light}]`}>Select delivery location</Text>
+                    )}
+                    <Ionicons name="chevron-down" size={20} color={COLORS.text.light} style={tw`absolute right-4 top-4`} />
+                  </TouchableOpacity>
+                )}
+
+                {serviceOption === 'self-pickup' && (
+                  <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
+                    <View style={tw`flex-row items-center mb-2`}>
+                      <Ionicons name="information-circle" size={20} color={COLORS.gold} />
+                      <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Self-Pickup Instructions</Text>
+                    </View>
+                    <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>
+                      Please drop off your laundry at our office address above. We will deliver to your delivery location when ready.
                     </Text>
                   </View>
-                </View>
-              )}
-            </>
-          )}
+                )}
 
-          {/* Navigation Buttons */}
-          <View style={tw`flex-row mb-6`}>
-            <TouchableOpacity
-              style={tw`flex-1 bg-[${COLORS.surface}] py-3 rounded-xl mr-2 border border-[${COLORS.border}]`}
-              onPress={() => setStep(1)}
-            >
-              <Text style={tw`text-[${COLORS.text.primary}] text-center font-medium`}>Back</Text>
-            </TouchableOpacity>
-            
-            <TouchableOpacity
-              style={tw`flex-1 bg-[${COLORS.gold}] py-3 rounded-xl ml-2 ${
-                (serviceOption === 'delivery' && (!pickupLocation || !deliveryLocation)) ||
-                (serviceOption === 'self-pickup' && !deliveryLocation) ||
-                (serviceOption === 'self-delivery' && !pickupLocation) ||
-                !isSufficient ? 'opacity-50' : ''
-              }`}
-              onPress={handleProceedToReview}
-              disabled={
-                (serviceOption === 'delivery' && (!pickupLocation || !deliveryLocation)) ||
-                (serviceOption === 'self-pickup' && !deliveryLocation) ||
-                (serviceOption === 'self-delivery' && !pickupLocation) ||
-                !isSufficient
-              }
-            >
-              <Text style={tw`text-white text-center font-bold`}>
-                {!isSufficient 
-                  ? 'Insufficient Balance' 
-                  : serviceOption === 'full-self' 
-                    ? 'Continue' 
-                    : ((serviceOption === 'delivery' && (!pickupLocation || !deliveryLocation)) ||
-                       (serviceOption === 'self-pickup' && !deliveryLocation) ||
-                       (serviceOption === 'self-delivery' && !pickupLocation)) 
-                      ? 'Select Locations' 
-                      : 'Continue'}
-              </Text>
-            </TouchableOpacity>
+                {serviceOption === 'self-delivery' && (
+                  <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-4`}>
+                    <View style={tw`flex-row items-center mb-2`}>
+                      <Ionicons name="information-circle" size={20} color={COLORS.gold} />
+                      <Text style={tw`text-[${COLORS.text.primary}] font-medium ml-2`}>Self-Delivery Instructions</Text>
+                    </View>
+                    <Text style={tw`text-[${COLORS.text.secondary}] text-sm`}>
+                      We will pick up your laundry from your pickup location. You can collect it from our office when ready.
+                    </Text>
+                  </View>
+                )}
+
+                {calculateTotalDeliveryFee() > 0 && (
+                  <View style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] mb-6`}>
+                    <Text style={tw`text-[${COLORS.text.primary}] font-medium mb-2`}>Total Service Fee</Text>
+                    <View style={tw`flex-row justify-between items-center`}>
+                      <View>
+                        {serviceOption === 'delivery' && pickupLocation && (
+                          <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
+                            Pickup: ₦{pickupLocation.deliveryFee}
+                          </Text>
+                        )}
+                        {serviceOption === 'delivery' && deliveryLocation && (
+                          <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
+                            Delivery: ₦{deliveryLocation.deliveryFee}
+                          </Text>
+                        )}
+                        {serviceOption === 'self-pickup' && deliveryLocation && (
+                          <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
+                            Delivery Fee: ₦{deliveryLocation.deliveryFee}
+                          </Text>
+                        )}
+                        {serviceOption === 'self-delivery' && pickupLocation && (
+                          <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>
+                            Pickup Fee: ₦{pickupLocation.deliveryFee}
+                          </Text>
+                        )}
+                        <Text style={tw`text-[${COLORS.text.secondary}] text-xs mt-1`}>
+                          Base fee: ₦{BASE_DELIVERY_FEE} included
+                        </Text>
+                      </View>
+                      <Text style={tw`text-[${COLORS.gold}] font-bold text-xl`}>
+                        ₦{calculateTotalDeliveryFee().toLocaleString()}
+                      </Text>
+                    </View>
+                  </View>
+                )}
+              </>
+            )}
+
+            <View style={tw`flex-row mb-6`}>
+              <TouchableOpacity
+                style={tw`flex-1 bg-[${COLORS.surface}] py-3 rounded-xl mr-2 border border-[${COLORS.border}]`}
+                onPress={() => setStep(1)}
+                activeOpacity={0.7}
+              >
+                <Text style={tw`text-[${COLORS.text.primary}] text-center font-medium`}>Back</Text>
+              </TouchableOpacity>
+              
+              <TouchableOpacity
+                style={tw`flex-1 bg-[${COLORS.gold}] py-3 rounded-xl ml-2 ${
+                  (serviceOption === 'delivery' && (!pickupLocation || !deliveryLocation)) ||
+                  (serviceOption === 'self-pickup' && !deliveryLocation) ||
+                  (serviceOption === 'self-delivery' && !pickupLocation) ||
+                  !isSufficient ? 'opacity-50' : ''
+                }`}
+                onPress={handleProceedToReview}
+                disabled={
+                  (serviceOption === 'delivery' && (!pickupLocation || !deliveryLocation)) ||
+                  (serviceOption === 'self-pickup' && !deliveryLocation) ||
+                  (serviceOption === 'self-delivery' && !pickupLocation) ||
+                  !isSufficient
+                }
+                activeOpacity={0.7}
+              >
+                <Text style={tw`text-white text-center font-bold`}>
+                  {!isSufficient 
+                    ? 'Insufficient Balance' 
+                    : serviceOption === 'full-self' 
+                      ? 'Continue' 
+                      : ((serviceOption === 'delivery' && (!pickupLocation || !deliveryLocation)) ||
+                         (serviceOption === 'self-pickup' && !deliveryLocation) ||
+                         (serviceOption === 'self-delivery' && !pickupLocation)) 
+                        ? 'Select Locations' 
+                        : 'Continue'}
+                </Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </ScrollView>
 
-        {/* Render modals */}
-        {renderLocationSearchModal()}
-        {renderInstructionsModal()}
-        {renderOrderInstructionsModal()}
+        {/* Location Search Modal */}
+        <Modal
+          visible={showLocationModal}
+          animationType="slide"
+          presentationStyle="pageSheet"
+          onRequestClose={() => setShowLocationModal(false)}
+        >
+          <SafeAreaView style={tw`flex-1 bg-white`}>
+            <View style={tw`flex-row items-center p-4 border-b border-[${COLORS.border}]`}>
+              <TouchableOpacity 
+                onPress={() => setShowLocationModal(false)} 
+                style={tw`p-2`}
+                activeOpacity={0.7}
+                hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+              >
+                <Ionicons name="arrow-back" size={24} color={COLORS.text.primary} />
+              </TouchableOpacity>
+              <Text style={tw`flex-1 text-center font-medium text-base`}>
+                {locationSearchType === 'pickup' ? 'Pickup Location' : 'Delivery Location'}
+              </Text>
+              <View style={tw`w-10`} />
+            </View>
+
+            <View style={tw`p-4`}>
+              <View style={tw`flex-row items-center bg-[${COLORS.surface}] rounded-lg px-3 border border-[${COLORS.border}]`}>
+                <Ionicons name="search" size={20} color={COLORS.text.light} />
+                <TextInput
+                  style={tw`flex-1 p-3 text-[${COLORS.text.primary}] text-base`}
+                  placeholder="Search for location"
+                  placeholderTextColor={COLORS.text.light}
+                  value={locationSearchQuery}
+                  onChangeText={handleLocationSearchChange}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {searchingLocation && (
+                  <ActivityIndicator size="small" color={COLORS.gold} />
+                )}
+                {locationSearchQuery.length > 0 && (
+                  <TouchableOpacity onPress={() => {
+                    setLocationSearchQuery('');
+                    setLocationSuggestions([]);
+                  }} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                    <Ionicons name="close-circle" size={20} color={COLORS.text.light} />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {locationSearchQuery.length < 3 ? (
+              <ScrollView style={tw`flex-1`}>
+                <TouchableOpacity
+                  style={tw`flex-row items-center p-4 border-b border-[${COLORS.border}]`}
+                  onPress={handleUseCurrentLocation}
+                  activeOpacity={0.7}
+                >
+                  <View style={tw`w-10 h-10 rounded-full bg-[${COLORS.gold}]/10 items-center justify-center mr-3`}>
+                    <Ionicons name="locate" size={20} color={COLORS.gold} />
+                  </View>
+                  <View>
+                    <Text style={tw`text-[${COLORS.text.primary}] font-medium`}>
+                      Use Current Location
+                    </Text>
+                    <Text style={tw`text-[${COLORS.text.light}] text-xs mt-1`}>
+                      Automatically detect your location
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+                
+                <View style={tw`p-4`}>
+                  <Text style={tw`text-[${COLORS.text.light}] text-center`}>
+                    Enter at least 3 characters to search for a specific address
+                  </Text>
+                </View>
+              </ScrollView>
+            ) : (
+              <FlatList
+                data={locationSuggestions}
+                keyExtractor={(item) => item.place_id.toString()}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={tw`flex-row items-center px-4 py-3 border-b border-[${COLORS.border}]`}
+                    onPress={() => handleSelectLocation(item)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={tw`w-10 h-10 rounded-full bg-[${COLORS.surface}] items-center justify-center mr-3`}>
+                      <Ionicons name="location" size={20} color={COLORS.text.secondary} />
+                    </View>
+                    <View style={tw`flex-1`}>
+                      <Text style={tw`text-[${COLORS.text.primary}] font-medium`}>
+                        {item.structured_formatting.main_text}
+                      </Text>
+                      <Text style={tw`text-[${COLORS.text.light}] text-xs mt-1`} numberOfLines={1}>
+                        {item.structured_formatting.secondary_text || item.description}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                )}
+                ListEmptyComponent={
+                  searchingLocation ? (
+                    <View style={tw`items-center justify-center py-10`}>
+                      <ActivityIndicator size="large" color={COLORS.gold} />
+                      <Text style={tw`text-[${COLORS.text.light}] mt-2`}>Searching...</Text>
+                    </View>
+                  ) : null
+                }
+              />
+            )}
+          </SafeAreaView>
+        </Modal>
       </View>
     );
-  }, [step, pickupLocation, deliveryLocation, useSameLocation, locationSearchModal, serviceOption, bypassMinOrder, alsUsableAmt, renderLocationSearchModal, renderInstructionsModal, renderOrderInstructionsModal, renderServiceOptions, calculateTotalWithDelivery, isBalanceSufficient, getBalanceDeficit]);
+  };
 
-  const renderReviewStep = useCallback(() => {
+  const renderReviewStep = () => {
     const totalWithDelivery = calculateTotalWithDelivery();
     const isSufficient = isBalanceSufficient();
     const deficit = getBalanceDeficit();
 
     return (
       <View style={tw`flex-1 bg-white`}>
-        <View style={tw`bg-[${COLORS.gold}] p-4`}>
-          <TouchableOpacity onPress={() => setStep(2)} style={tw`mb-2`}>
+        <View style={tw`bg-[${COLORS.gold}] p-4 ${Platform.OS === 'ios' ? 'pt-1' : 'pt-4'}`}>
+          <TouchableOpacity onPress={() => setStep(2)} style={tw`mb-2`} activeOpacity={0.7} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
             <Ionicons name="arrow-back" size={24} color="white" />
           </TouchableOpacity>
           <Text style={tw`text-white text-xl font-bold`}>Review Order</Text>
           <Text style={tw`text-white/80 text-sm mt-1`}>Step 3 of 3</Text>
         </View>
 
-        <ScrollView style={tw`p-4`} showsVerticalScrollIndicator={false}>
-          {/* Balance Summary */}
-          <View style={tw`bg-[${isSufficient ? COLORS.success : COLORS.error}]/10 p-4 rounded-xl border border-[${isSufficient ? COLORS.success : COLORS.error}]/30 mb-4`}>
+        <ScrollView style={tw`p-4`} showsVerticalScrollIndicator={true}>
+          <View style={tw`bg-[${isSufficient ? COLORS.success : COLORS.error}]/10 p-4 rounded-xl border border-[${isSufficient ? COLORS.success : COLORS.error}]/30 mb-1`}>
             <View style={tw`flex-row justify-between items-center mb-2`}>
               <Text style={tw`text-[${COLORS.text.primary}] font-medium`}>Total Order Cost</Text>
               <Text style={tw`text-[${COLORS.gold}] font-bold text-lg`}>₦{totalWithDelivery.toLocaleString()}</Text>
@@ -1832,7 +1611,6 @@ const AlsScreen = () => {
             )}
           </View>
 
-          {/* Service Option Summary */}
           <View style={tw`bg-[${COLORS.surface}] rounded-xl border border-[${COLORS.border}] p-4 mb-4`}>
             <Text style={tw`text-[${COLORS.text.primary}] font-bold mb-2`}>Service Option</Text>
             <View style={tw`flex-row items-center`}>
@@ -1861,7 +1639,6 @@ const AlsScreen = () => {
             )}
           </View>
 
-          {/* Items Summary with Instructions */}
           <View style={tw`bg-[${COLORS.surface}] rounded-xl border border-[${COLORS.border}] p-4 mb-4`}>
             <Text style={tw`text-[${COLORS.text.primary}] font-bold mb-3`}>Items ({selectedItems.length})</Text>
             {selectedItems.map((item) => (
@@ -1883,7 +1660,6 @@ const AlsScreen = () => {
                   </Text>
                 </View>
                 
-                {/* Show item instructions if any */}
                 {item.instructions && (
                   <View style={tw`mt-2 ml-10 p-2 bg-white rounded-lg`}>
                     <View style={tw`flex-row items-center`}>
@@ -1901,7 +1677,6 @@ const AlsScreen = () => {
             ))}
           </View>
 
-          {/* Order Instructions Summary */}
           {orderInstructions && (
             <View style={tw`bg-[${COLORS.surface}] rounded-xl border border-[${COLORS.border}] p-4 mb-4`}>
               <View style={tw`flex-row items-center mb-2`}>
@@ -1914,19 +1689,16 @@ const AlsScreen = () => {
             </View>
           )}
 
-          {/* Location Summary */}
           <View style={tw`bg-[${COLORS.surface}] rounded-xl border border-[${COLORS.border}] p-4 mb-4`}>
             <Text style={tw`text-[${COLORS.text.primary}] font-bold mb-3`}>
               {serviceOption === 'full-self' ? 'Office Information' : 'Location Details'}
             </Text>
             
-            {/* Show office location for all options */}
             <View style={tw`mb-3`}>
               <Text style={tw`text-[${COLORS.text.light}] text-xs mb-1`}>OUR OFFICE</Text>
               <Text style={tw`text-[${COLORS.text.primary}]`}>{COMPANY_OFFICE.address}</Text>
             </View>
 
-            {/* Show pickup location if applicable */}
             {(serviceOption === 'delivery' || serviceOption === 'self-delivery') && pickupLocation && (
               <View style={tw`mb-3`}>
                 <Text style={tw`text-[${COLORS.text.light}] text-xs mb-1`}>
@@ -1942,7 +1714,6 @@ const AlsScreen = () => {
               </View>
             )}
             
-            {/* Show delivery location if applicable */}
             {(serviceOption === 'delivery' || serviceOption === 'self-pickup') && deliveryLocation && (
               <View>
                 <Text style={tw`text-[${COLORS.text.light}] text-xs mb-1`}>
@@ -1966,7 +1737,6 @@ const AlsScreen = () => {
               </View>
             )}
 
-            {/* Special instructions for full-self */}
             {serviceOption === 'full-self' && (
               <View style={tw`mt-3 pt-3 border-t border-[${COLORS.border}]`}>
                 <View style={tw`flex-row items-center`}>
@@ -1980,7 +1750,6 @@ const AlsScreen = () => {
             )}
           </View>
 
-          {/* Price Breakdown */}
           <View style={tw`bg-[${COLORS.surface}] rounded-xl border border-[${COLORS.border}] p-4 mb-6`}>
             <Text style={tw`text-[${COLORS.text.primary}] font-bold mb-3`}>Price Details</Text>
             
@@ -1989,7 +1758,6 @@ const AlsScreen = () => {
               <Text style={tw`text-[${COLORS.text.primary}]`}>₦{grandTotal.toLocaleString()}</Text>
             </View>
             
-            {/* Show delivery fee breakdown based on service option */}
             {calculateTotalDeliveryFee() > 0 ? (
               <>
                 {serviceOption === 'delivery' && pickupLocation && (
@@ -2036,7 +1804,6 @@ const AlsScreen = () => {
               </View>
             </View>
 
-            {/* Final balance check warning */}
             {!isSufficient && (
               <View style={tw`mt-3 p-3 bg-red-50 rounded-lg border border-red-200`}>
                 <View style={tw`flex-row items-center mb-1`}>
@@ -2053,11 +1820,11 @@ const AlsScreen = () => {
             )}
           </View>
 
-          {/* Action Buttons */}
           <View style={tw`flex-row mb-6`}>
             <TouchableOpacity
               style={tw`flex-1 bg-[${COLORS.surface}] py-3 rounded-xl mr-2 border border-[${COLORS.border}]`}
               onPress={() => setStep(2)}
+              activeOpacity={0.7}
             >
               <Text style={tw`text-[${COLORS.text.primary}] text-center font-medium`}>Edit</Text>
             </TouchableOpacity>
@@ -2068,6 +1835,7 @@ const AlsScreen = () => {
               }`}
               onPress={saveOrder}
               disabled={!isSufficient || loading}
+              activeOpacity={0.7}
             >
               {loading ? (
                 <ActivityIndicator color="white" />
@@ -2081,25 +1849,23 @@ const AlsScreen = () => {
         </ScrollView>
       </View>
     );
-  }, [step, selectedItems, pickupLocation, deliveryLocation, useSameLocation, grandTotal, serviceOption, bypassMinOrder, orderInstructions, loading, alsUsableAmt, calculateTotalWithDelivery, isBalanceSufficient, getBalanceDeficit]);
+  };
 
-  const renderComboBox = useCallback(() => {
+  const renderComboBox = () => {
     const totalWithDelivery = calculateTotalWithDelivery();
     const isSufficient = isBalanceSufficient();
 
     return (
       <View style={tw`flex-1 bg-white`}>
-        {/* Header with proper spacing */}
-        <View style={tw`bg-[${COLORS.gold}] p-4 pt-6`}>
+        <View style={tw`bg-[${COLORS.gold}] p-4 ${Platform.OS === 'ios' ? 'pt-1' : 'pt-2'}`}>
           <Text style={tw`text-white text-xl font-bold`}>African Lagos Style</Text>
           <Text style={tw`text-white/80 text-sm mt-1`}>Step 1 of 3 - Select Items</Text>
         </View>
 
-        {/* Balance display - moved to a dedicated row */}
         <View style={tw`flex-row justify-between items-center px-4 py-3 bg-yellow-50 border-b border-yellow-200`}>
           <View>
             <Text style={tw`text-[${COLORS.text.secondary}] text-xs`}>Available Balance</Text>
-            <Text style={tw`text-[${COLORS.gold}] font-bold text-lg`}>₦{alsUsableAmt.toLocaleString()}</Text>
+            <Text style={tw`text-[${COLORS.gold}] font-bold text-base`}>₦{alsUsableAmt.toLocaleString()}</Text>
           </View>
           
           {selectedItems.length > 0 && (
@@ -2111,10 +1877,11 @@ const AlsScreen = () => {
             </View>
           )}
           
-          {/* Cart button moved to header row instead of absolute positioning */}
           <TouchableOpacity
             style={tw`bg-[${COLORS.gold}] rounded-full h-10 w-10 items-center justify-center ml-2`}
             onPress={() => setShowCart(true)}
+            activeOpacity={0.7}
+            hitSlop={{top: 5, bottom: 5, left: 5, right: 5}}
           >
             <Ionicons name="cart" size={20} color="white" />
             {selectedItems.length > 0 && (
@@ -2125,12 +1892,11 @@ const AlsScreen = () => {
           </TouchableOpacity>
         </View>
 
-        {/* Search bar */}
         <View style={tw`px-4 py-2`}>
           <View style={tw`flex-row items-center bg-white rounded-xl px-3 py-1 border border-[${COLORS.border}]`}>
             <Ionicons name="search" size={20} color={COLORS.text.light} />
             <TextInput
-              style={tw`flex-1 p-2 text-[${COLORS.text.primary}]`}
+              style={tw`flex-1 p-2 text-[${COLORS.text.primary}] text-base`}
               placeholder="Search items..."
               placeholderTextColor={COLORS.text.light}
               value={searchTerm}
@@ -2138,17 +1904,15 @@ const AlsScreen = () => {
               returnKeyType="search"
             />
             {searchTerm.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchTerm('')}>
+              <TouchableOpacity onPress={() => setSearchTerm('')} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
                 <Ionicons name="close-circle" size={20} color={COLORS.text.light} />
               </TouchableOpacity>
             )}
           </View>
         </View>
 
-        {/* Categories */}
         {renderCategoryTabs()}
 
-        {/* Items Grid */}
         {loading && !refreshing ? (
           <View style={tw`flex-1 items-center justify-center`}>
             <ActivityIndicator size="large" color={COLORS.gold} />
@@ -2158,7 +1922,7 @@ const AlsScreen = () => {
           <FlatList
             data={filteredItems}
             keyExtractor={(item) => item.id}
-            numColumns={2}
+            numColumns={isTablet ? 3 : 2}
             columnWrapperStyle={tw`justify-between px-4`}
             renderItem={({ item }) => {
               const cartItem = selectedItems.find(cartItem => cartItem.id === item.id);
@@ -2166,7 +1930,7 @@ const AlsScreen = () => {
               
               return (
                 <TouchableOpacity
-                  style={tw`w-[48%] bg-[${COLORS.surface}] rounded-xl p-3 mb-3 border ${isSelected ? `border-[${COLORS.gold}]` : `border-[${COLORS.border}]`}`}
+                  style={tw`w-[${isTablet ? '31%' : '48%'}] bg-[${COLORS.surface}] rounded-xl p-3 mb-3 border ${isSelected ? `border-[${COLORS.gold}]` : `border-[${COLORS.border}]`}`}
                   onPress={() => handleSelectItem(item)}
                   activeOpacity={0.7}
                 >
@@ -2192,6 +1956,8 @@ const AlsScreen = () => {
                         <TouchableOpacity
                           style={tw`bg-white rounded-full h-8 w-8 items-center justify-center border border-[${COLORS.border}]`}
                           onPress={() => handleQuantityChange(item.id, 'decrement')}
+                          activeOpacity={0.7}
+                          hitSlop={{top: 5, bottom: 5, left: 5, right: 5}}
                         >
                           <Text style={tw`text-lg font-bold text-[${COLORS.text.primary}]`}>-</Text>
                         </TouchableOpacity>
@@ -2199,6 +1965,8 @@ const AlsScreen = () => {
                         <TouchableOpacity
                           style={tw`bg-white rounded-full h-8 w-8 items-center justify-center border border-[${COLORS.border}]`}
                           onPress={() => handleQuantityChange(item.id, 'increment')}
+                          activeOpacity={0.7}
+                          hitSlop={{top: 5, bottom: 5, left: 5, right: 5}}
                         >
                           <Text style={tw`text-lg font-bold text-[${COLORS.text.primary}]`}>+</Text>
                         </TouchableOpacity>
@@ -2245,8 +2013,9 @@ const AlsScreen = () => {
                     }`}
                     onPress={handleProceedToLocation}
                     disabled={!isSufficient}
+                    activeOpacity={0.7}
                   >
-                    <Text style={tw`text-white font-bold text-lg`}>
+                    <Text style={tw`text-white font-bold text-base`}>
                       {!isSufficient 
                         ? 'Insufficient Balance' 
                         : `Proceed to Delivery • ₦${totalWithDelivery.toLocaleString()}`}
@@ -2263,23 +2032,198 @@ const AlsScreen = () => {
           />
         )}
         
-        {/* Modals */}
-        {renderInstructionsModal()}
-        {renderOrderInstructionsModal()}
+        {/* Instructions Modal */}
+        <Modal
+          visible={showInstructionsModal}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setShowInstructionsModal(false)}
+        >
+          <View style={tw`flex-1 bg-black/50 justify-end`}>
+            <View style={tw`bg-white rounded-t-3xl`}>
+              <View style={tw`items-center pt-2`}>
+                <View style={tw`w-12 h-1 bg-gray-300 rounded-full`} />
+              </View>
+              
+              <View style={tw`p-4`}>
+                <View style={tw`flex-row justify-between items-center mb-4`}>
+                  <Text style={tw`text-xl font-bold text-[${COLORS.text.primary}]`}>
+                    Special Instructions
+                  </Text>
+                  <TouchableOpacity onPress={() => setShowInstructionsModal(false)} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                    <Ionicons name="close" size={24} color={COLORS.text.primary} />
+                  </TouchableOpacity>
+                </View>
+
+                {selectedItemForInstructions && (
+                  <Text style={tw`text-[${COLORS.gold}] font-medium mb-2`}>
+                    For: {selectedItemForInstructions.description}
+                  </Text>
+                )}
+
+                <TextInput
+                  style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] text-[${COLORS.text.primary}] mb-3 min-h-[100px] text-base`}
+                  placeholder="E.g., No starch, Extra soft, Hand wash only, etc."
+                  placeholderTextColor={COLORS.text.light}
+                  value={itemInstructions}
+                  onChangeText={setItemInstructions}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+
+                <TouchableOpacity
+                  style={tw`flex-row items-center mb-3`}
+                  onPress={() => setShowCommonInstructions(!showCommonInstructions)}
+                  hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}
+                >
+                  <Ionicons 
+                    name={showCommonInstructions ? "chevron-up" : "chevron-down"} 
+                    size={20} 
+                    color={COLORS.gold} 
+                  />
+                  <Text style={tw`text-[${COLORS.gold}] font-medium ml-2`}>
+                    Common Instructions
+                  </Text>
+                </TouchableOpacity>
+
+                {showCommonInstructions && (
+                  <ScrollView 
+                    horizontal 
+                    showsHorizontalScrollIndicator={false}
+                    style={tw`mb-4`}
+                  >
+                    <View style={tw`flex-row`}>
+                      {COMMON_INSTRUCTIONS.map((instruction, index) => (
+                        <TouchableOpacity
+                          key={index}
+                          style={tw`bg-[${COLORS.surface}] px-3 py-2 rounded-full mr-2 border border-[${COLORS.border}]`}
+                          onPress={() => handleSelectCommonInstruction(instruction)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={tw`text-[${COLORS.text.primary}] text-sm`}>
+                            {instruction}
+                          </Text>
+                        </TouchableOpacity>
+                      ))}
+                    </View>
+                  </ScrollView>
+                )}
+
+                <View style={tw`flex-row mt-4`}>
+                  <TouchableOpacity
+                    style={tw`flex-1 bg-[${COLORS.surface}] py-3 rounded-xl mr-2 border border-[${COLORS.border}]`}
+                    onPress={() => {
+                      setShowInstructionsModal(false);
+                      setItemInstructions('');
+                      setShowCommonInstructions(false);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={tw`text-[${COLORS.text.primary}] text-center font-medium`}>
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={tw`flex-1 bg-[${COLORS.gold}] py-3 rounded-xl ml-2`}
+                    onPress={() => {
+                      handleSaveInstructions();
+                      setShowInstructionsModal(false);
+                      setShowCommonInstructions(false);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={tw`text-white text-center font-bold`}>
+                      Save
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
+        {/* Order Instructions Modal */}
+        <Modal
+          visible={showOrderInstructionsModal}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setShowOrderInstructionsModal(false)}
+        >
+          <View style={tw`flex-1 bg-black/50 justify-end`}>
+            <View style={tw`bg-white rounded-t-3xl`}>
+              <View style={tw`items-center pt-2`}>
+                <View style={tw`w-12 h-1 bg-gray-300 rounded-full`} />
+              </View>
+              
+              <View style={tw`p-4`}>
+                <View style={tw`flex-row justify-between items-center mb-4`}>
+                  <Text style={tw`text-xl font-bold text-[${COLORS.text.primary}]`}>
+                    Order Instructions
+                  </Text>
+                  <TouchableOpacity onPress={() => setShowOrderInstructionsModal(false)} hitSlop={{top: 10, bottom: 10, left: 10, right: 10}}>
+                    <Ionicons name="close" size={24} color={COLORS.text.primary} />
+                  </TouchableOpacity>
+                </View>
+
+                <Text style={tw`text-[${COLORS.text.secondary}] mb-2`}>
+                  Add any general instructions for your entire order
+                </Text>
+
+                <TextInput
+                  style={tw`bg-[${COLORS.surface}] p-4 rounded-xl border border-[${COLORS.border}] text-[${COLORS.text.primary}] mb-4 min-h-[120px] text-base`}
+                  placeholder="E.g., Please call before pickup, Leave at doorstep, etc."
+                  placeholderTextColor={COLORS.text.light}
+                  value={orderInstructions}
+                  onChangeText={setOrderInstructions}
+                  multiline
+                  numberOfLines={5}
+                  textAlignVertical="top"
+                />
+
+                <View style={tw`flex-row mt-2`}>
+                  <TouchableOpacity
+                    style={tw`flex-1 bg-[${COLORS.surface}] py-3 rounded-xl mr-2 border border-[${COLORS.border}]`}
+                    onPress={() => setShowOrderInstructionsModal(false)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={tw`text-[${COLORS.text.primary}] text-center font-medium`}>
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+                  
+                  <TouchableOpacity
+                    style={tw`flex-1 bg-[${COLORS.gold}] py-3 rounded-xl ml-2`}
+                    onPress={() => setShowOrderInstructionsModal(false)}
+                    activeOpacity={0.7}
+                  >
+                    <Text style={tw`text-white text-center font-bold`}>
+                      Save
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
         {renderCartSidebar()}
       </View>
     );
-  }, [loading, refreshing, filteredItems, selectedItems, grandTotal, alsUsableAmt, renderCategoryTabs, renderCartSidebar, renderInstructionsModal, renderOrderInstructionsModal, calculateTotalWithDelivery, isBalanceSufficient, getBalanceDeficit]);
+  };
 
+  // ==================== MAIN RENDER ====================
   return (
     <Container className='p-0'>
+      <StatusBar barStyle="light-content" backgroundColor={COLORS.gold} />
       <View style={tw`h-auto min-h-[10%] bg-yellow-600`}>
         <TopBar 
           balance={balance} 
           handleScreenChange={handleScreenChange}
           onViewHistory={handleViewHistory}
           onGoHome={goHome} 
-          customerName={customerName} // Make sure your TopBar accepts this prop
+          customerName={customerName}
         />
       </View>
 

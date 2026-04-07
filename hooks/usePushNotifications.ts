@@ -5,6 +5,7 @@ import Constants from 'expo-constants';
 import { Platform, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { router } from 'expo-router';
+import { Subscription } from 'expo-notifications';
 
 // Configure how notifications behave when app is in foreground
 Notifications.setNotificationHandler({
@@ -17,9 +18,9 @@ Notifications.setNotificationHandler({
 
 export const usePushNotifications = () => {
   const [expoPushToken, setExpoPushToken] = useState('');
-  const [notification, setNotification] = useState(null);
-  const notificationListener = useRef();
-  const responseListener = useRef();
+  const [notification, setNotification] = useState<Notifications.Notification | null>(null);
+  const notificationListener = useRef<Subscription | null>(null);
+  const responseListener = useRef<Subscription | null>(null);
 
   // Register for push notifications
   const registerForPushNotificationsAsync = async () => {
@@ -78,9 +79,12 @@ export const usePushNotifications = () => {
 
       try {
         // Get Expo push token
-        const projectId = Constants.expoConfig?.extra?.eas?.projectId || 
-                          Constants?.easConfig?.projectId || 
-                          'your-project-id-here'; // Replace with your actual project ID
+        const projectId = Constants.expoConfig?.extra?.eas?.projectId;
+        
+        if (!projectId) {
+          console.error('Project ID not found in Constants');
+          return;
+        }
         
         token = (await Notifications.getExpoPushTokenAsync({
           projectId,
@@ -105,7 +109,7 @@ export const usePushNotifications = () => {
   };
 
   // Send token to your backend
-  const sendTokenToBackend = async (token) => {
+  const sendTokenToBackend = async (token: string) => {
     const mobile = await AsyncStorage.getItem('mobile');
     
     if (!mobile) return;
@@ -129,7 +133,7 @@ export const usePushNotifications = () => {
   };
 
   // Handle navigation when notification is tapped
-  const handleNotificationResponse = (response) => {
+  const handleNotificationResponse = (response: Notifications.NotificationResponse) => {
     const { data } = response.notification.request.content;
     
     console.log('Notification tapped with data:', data);
@@ -153,7 +157,7 @@ export const usePushNotifications = () => {
   };
 
   // Schedule a local notification (for testing)
-  const showLocalNotification = async (title, body, data = {}) => {
+  const showLocalNotification = async (title: string, body: string, data: any = {}) => {
     await Notifications.scheduleNotificationAsync({
       content: {
         title,
@@ -167,7 +171,7 @@ export const usePushNotifications = () => {
   };
 
   // Schedule a notification for later
-  const scheduleFutureNotification = async (title, body, secondsFromNow, data = {}) => {
+  const scheduleFutureNotification = async (title: string, body: string, secondsFromNow: number, data: any = {}) => {
     await Notifications.scheduleNotificationAsync({
       content: {
         title,
@@ -198,7 +202,7 @@ export const usePushNotifications = () => {
   };
 
   // Set badge count
-  const setBadgeCount = async (count) => {
+  const setBadgeCount = async (count: number) => {
     await Notifications.setBadgeCountAsync(count);
   };
 
@@ -214,11 +218,6 @@ export const usePushNotifications = () => {
     notificationListener.current = Notifications.addNotificationReceivedListener(notification => {
       console.log('Notification received in foreground:', notification);
       setNotification(notification);
-      
-      // You can trigger your custom ringtone here
-      // if (global.playRingtone) {
-      //   global.playRingtone();
-      // }
     });
 
     // Listener for when user taps on notification
@@ -227,9 +226,13 @@ export const usePushNotifications = () => {
     });
 
     return () => {
-      // Clean up listeners
-      Notifications.removeNotificationSubscription(notificationListener.current);
-      Notifications.removeNotificationSubscription(responseListener.current);
+      // Clean up listeners - use the correct method name
+      if (notificationListener.current) {
+        Notifications.removeNotificationSubscription(notificationListener.current);
+      }
+      if (responseListener.current) {
+        Notifications.removeNotificationSubscription(responseListener.current);
+      }
     };
   }, []);
 
